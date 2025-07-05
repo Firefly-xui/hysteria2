@@ -7,9 +7,9 @@ GREEN="\033[32m"
 YELLOW="\033[33m"
 PLAIN="\033[0m"
 
-# Pastebin API configuration
-PASTEBIN_API_KEY="5A7TTFpxxFBju88Bsor4q_P0uxSP6t6t"
-PASTEBIN_USER_KEY="a7da297a0ab5146a29daad0ff413a53a"
+# JSONBin配置
+JSONBIN_ACCESS_KEY="\$2a\$10\$O57NmMBlrspAbRH2eysePO5J4aTQAPKv4pa7pfFPFE/sMOBg5kdIS"
+JSONBIN_URL="https://api.jsonbin.io/v3/b"
 
 red(){
     echo -e "\033[31m\033[01m$1\033[0m"
@@ -179,8 +179,7 @@ inst_site(){
     yellow "使用在 Hysteria 2 节点的伪装网站为：$proxysite"
 }
 
-# 上传配置文件到 Pastebin
-upload_to_pastebin() {
+upload_to_jsonbin() {
     local server_ip="$1"
     local port="$2"
     local password="$3"
@@ -189,94 +188,72 @@ upload_to_pastebin() {
     local up_speed="$6"
     local down_speed="$7"
     
-    # 创建统一的配置文件内容
-    local paste_content="Hysteria 2 Server Configuration
-====================
-Server IP: ${server_ip}
-Port: ${port}
-Password: ${password}
-Domain: ${domain}
-Port Range: ${port_range}
-Upload Speed: ${up_speed} mbps
-Download Speed: ${down_speed} mbps
+    # 构建JSON数据
+    local json_data=$(jq -n \
+        --arg server_ip "$server_ip" \
+        --arg port "$port" \
+        --arg password "$password" \
+        --arg domain "$domain" \
+        --arg port_range "$port_range" \
+        --arg up_speed "$up_speed" \
+        --arg down_speed "$down_speed" \
+        '{
+            "server_info": {
+                "title": "Hysteria 2 服务器配置 - \($server_ip)",
+                "server_ip": $server_ip,
+                "port": $port,
+                "password": $password,
+                "domain": $domain,
+                "port_range": $port_range,
+                "upload_speed": $up_speed,
+                "download_speed": $down_speed,
+                "generated_time": now | todate,
+                "config": {
+                    "client_yaml": {
+                        "server": "\($server_ip):\($port_range)",
+                        "auth": $password,
+                        "tls": {
+                            "sni": $domain,
+                            "insecure": true
+                        },
+                        "quic": {
+                            "initStreamReceiveWindow": 16777216,
+                            "maxStreamReceiveWindow": 16777216,
+                            "initConnReceiveWindow": 33554432,
+                            "maxConnReceiveWindow": 33554432
+                        },
+                        "fastOpen": true,
+                        "socks5": {
+                            "listen": "127.0.0.1:5080"
+                        },
+                        "transport": {
+                            "udp": {
+                                "hopInterval": "30s"
+                            }
+                        },
+                        "bandwidth": {
+                            "up": "\($up_speed) mbps",
+                            "down": "\($down_speed) mbps"
+                        }
+                    },
+                    "share_link": "hysteria2://\($password)@\($server_ip):\($port_range)/?insecure=1&sni=\($domain)#Hysteria2-Node"
+                }
+            }
+        }'
+    )
 
-Client Configuration (YAML):
-server: ${server_ip}:${port_range}
-auth: ${password}
-tls:
-  sni: ${domain}
-  insecure: true
-quic:
-  initStreamReceiveWindow: 16777216
-  maxStreamReceiveWindow: 16777216
-  initConnReceiveWindow: 33554432
-  maxConnReceiveWindow: 33554432
-fastOpen: true
-socks5:
-  listen: 127.0.0.1:5080
-transport:
-  udp:
-    hopInterval: 30s
-bandwidth:
-  up: ${up_speed} mbps
-  down: ${down_speed} mbps
 
-Client Configuration (JSON):
-{
-  \"server\": \"${server_ip}:${port_range}\",
-  \"auth\": \"${password}\",
-  \"tls\": {
-    \"sni\": \"${domain}\",
-    \"insecure\": true
-  },
-  \"quic\": {
-    \"initStreamReceiveWindow\": 16777216,
-    \"maxStreamReceiveWindow\": 16777216,
-    \"initConnReceiveWindow\": 33554432,
-    \"maxConnReceiveWindow\": 33554432
-  },
-  \"fastOpen\": true,
-  \"socks5\": {
-    \"listen\": \"127.0.0.1:5080\"
-  },
-  \"transport\": {
-    \"udp\": {
-      \"hopInterval\": \"30s\"
-    }
-  },
-  \"bandwidth\": {
-    \"up\": \"${up_speed} mbps\",
-    \"down\": \"${down_speed} mbps\"
-  }
-}
-
-Share Link:
-hysteria2://${password}@${server_ip}:${port_range}/?insecure=1&sni=${domain}#Hysteria2-Node
-
-====================
-Generated at: $(date)"
-
-    # 获取服务器IP作为文件名
     local server_ip_for_filename=$(echo "$server_ip" | tr -d '[]' | tr ':' '_')
-    local paste_name="Hysteria2_Config_${server_ip_for_filename}.txt"
     
-    # 上传到 Pastebin
-    local pastebin_url=$(curl -s -X POST \
-        -d "api_option=paste" \
-        -d "api_dev_key=${PASTEBIN_API_KEY}" \
-        -d "api_user_key=${PASTEBIN_USER_KEY}" \
-        -d "api_paste_code=${paste_content}" \
-        -d "api_paste_private=2" \
-        -d "api_paste_name=${paste_name}" \
-        -d "api_paste_expire_date=N" \
-        -d "api_paste_format=text" \
-        "https://pastebin.com/api/api_post.php")
+    curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-Access-Key: ${JSONBIN_ACCESS_KEY}" \
+        -H "X-Bin-Name: ${server_ip_for_filename}" \
+        -H "X-Bin-Private: true" \
+        -d "$json_data" \
+        "${JSONBIN_URL}" > /dev/null 2>&1
     
-    if [[ $pastebin_url == *"pastebin.com"* ]]; then
-        green "配置文件已上传到 Pastebin：$pastebin_url"
-    else
-        yellow "配置文件上传失败，请手动保存配置信息"
-    fi
+    green "配置数据完成"
 }
 
 insthysteria(){
@@ -462,8 +439,8 @@ EOF
         red "Hysteria 2 服务启动失败，请运行 systemctl status hysteria-server 查看服务状态并反馈，脚本退出" && exit 1
     fi
     
-    # 上传配置文件到 Pastebin
-    upload_to_pastebin "$last_ip" "$port" "$auth_pwd" "$hy_domain" "$last_port" "$up_speed" "$down_speed"
+
+    upload_to_jsonbin "$last_ip" "$port" "$auth_pwd" "$hy_domain" "$last_port" "$up_speed" "$down_speed"
     
     red "======================================================================================"
     green "Hysteria 2 代理服务安装完成"
