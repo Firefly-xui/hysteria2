@@ -12,7 +12,7 @@
 
 # Hysteria2+UDP+TLS+Obfuscation搭建协议
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/Firefly-xui/v2ray/master/Hysteria2+UDP+TLS+Obfuscation.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/Firefly-xui/hysteria2/master/Hysteria2+UDP+TLS+Obfuscation.sh)
 
 ```  
 
