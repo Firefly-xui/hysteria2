@@ -8,7 +8,7 @@
 ## OS  
 - Ubuntu 22-24
 
-
+-FinalShell下载地址 [FinalShell](https://dl.hostbuf.com/finalshell3/finalshell_windows_x64.exe)
 
 # Hysteria2+UDP+TLS+Obfuscation搭建协议
 ```
