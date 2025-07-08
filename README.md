@@ -50,4 +50,9 @@ window配置V2rayN
 V2rayN客户端下载[V2rayN](https://github.com/Firefly-xui/3x-ui/releases/download/3x-ui/v2rayN-windows-64.zip)。
 
 
+| 协议组合                            | 抗封锁   | 延迟    | 稳定性   | 部署复杂度 | 适用建议       |
+| ------------------------------- | ----- | ----- | ----- | ----- | ---------- |
+| Hysteria2 + UDP + TLS + Obfs    | ★★★☆☆ | ★★★★★ | ★★★☆☆ | ★★☆☆☆ | 流媒体 / 备用   |
+| TUIC + UDP + QUIC + TLS         | ★★★★☆ | ★★★★★ | ★★★★☆ | ★★★★★ | 游戏 / 多任务场景 |
+| VLESS + Reality + uTLS + Vision | ★★★★★ | ★★★☆☆ | ★★★★☆ | ★☆☆☆☆ | 配置安全可靠     |
 
